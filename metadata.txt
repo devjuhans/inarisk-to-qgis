@@ -1,0 +1,12 @@
+[general]
+name=InaRISK to QGIS
+qgisMinimumVersion=3.0
+description=A powerful and automated tool to directly fetch, clip, and process InaRISK hazard, risk, and vulnerability data from the official BNPB ArcGIS ImageServers. Features include automated batch downloading, smart coordinate reprojection, on-the-fly raster classification, polygon smoothing, and automatic attribution generation. Built to seamlessly integrate Indonesian disaster spatial data into your GIS workflows.
+version=1.0
+author=Juhans
+email=juhans@tuta.io
+about=Streamline InaRISK data extraction and processing directly from BNPB servers.
+tracker=
+repository=
+category=Vector
+icon=inarisktoqgis.png
