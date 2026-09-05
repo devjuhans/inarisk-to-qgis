@@ -4,6 +4,7 @@ from qgis.PyQt.QtWidgets import QAction
 
 import os.path
 from .inarisk_to_qgis_dialog import InaRiskToQgisDialog
+from .i18n_manager import tr
 
 class InaRiskToQgis:
     def __init__(self, iface):
@@ -39,7 +40,7 @@ class InaRiskToQgis:
         icon_path = os.path.join(self.plugin_dir, 'inarisktoqgis.png')
         self.add_action(
             icon_path,
-            text='Download from InaRISK Server',
+            text=tr('Run InaRISK to QGIS'),
             callback=self.run_server,
             parent=self.iface.mainWindow())
 
@@ -52,6 +53,5 @@ class InaRiskToQgis:
         self._launch_dialog()
 
     def _launch_dialog(self):
-        from .inarisk_to_qgis_dialog import InaRiskToQgisDialog
         self.dlg = InaRiskToQgisDialog(self.iface)
-        self.dlg.exec_()
+        self.dlg.exec()
