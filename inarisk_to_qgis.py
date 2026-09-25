@@ -4,6 +4,7 @@ from qgis.PyQt.QtWidgets import QAction
 
 import os.path
 from .inarisk_to_qgis_dialog import InaRiskToQgisDialog
+from .spatial_planning_dialog import InaRiskSpatialPlanningDialog
 from .i18n_manager import tr
 
 class InaRiskToQgis:
@@ -37,11 +38,19 @@ class InaRiskToQgis:
         return action
 
     def initGui(self):
-        icon_path = os.path.join(self.plugin_dir, 'inarisktoqgis.png')
+        icon_earth = os.path.join(self.plugin_dir, 'earth.svg')
+        icon_layer = os.path.join(self.plugin_dir, 'layer.svg')
+        
         self.add_action(
-            icon_path,
+            icon_earth,
             text=tr('Run InaRISK to QGIS'),
             callback=self.run_server,
+            parent=self.iface.mainWindow())
+
+        self.add_action(
+            icon_layer,
+            text=tr('InaRISK for Spatial Planning'),
+            callback=self.run_spatial_planning,
             parent=self.iface.mainWindow())
 
     def unload(self):
@@ -55,3 +64,7 @@ class InaRiskToQgis:
     def _launch_dialog(self):
         self.dlg = InaRiskToQgisDialog(self.iface)
         self.dlg.exec()
+
+    def run_spatial_planning(self):
+        self.dlg_sp = InaRiskSpatialPlanningDialog(self.iface)
+        self.dlg_sp.exec()

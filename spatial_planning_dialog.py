@@ -1,88 +1,82 @@
 import os
-from qgis.PyQt.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, 
-                                 QRadioButton, QComboBox, QPushButton, QFileDialog, 
-                                 QLabel, QCheckBox, QDialogButtonBox, QLineEdit, QFormLayout,
-                                 QSplitter, QTabWidget, QScrollArea, QTextEdit, QTextBrowser,
-                                 QProgressBar, QWidget, QSizePolicy, QListWidget, QListWidgetItem)
+from qgis.PyQt.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout, 
+    QLabel, QComboBox, QLineEdit, QPushButton, QCheckBox, 
+    QTextEdit, QProgressBar, QFileDialog, QTabWidget, QWidget,
+    QSplitter, QTextBrowser, QListWidget, QListWidgetItem, QSizePolicy
+)
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QIcon, QIntValidator
 from qgis.core import QgsProject, QgsMapLayerType
 from .i18n_manager import tr, I18nManager
 
-class ModeSelectionDialog(QDialog):
-    def __init__(self, parent=None):
-        super(ModeSelectionDialog, self).__init__(parent)
-        self.setWindowTitle('InaRISK to QGIS - Select Mode')
-        self.resize(300, 100)
-        
-        layout = QVBoxLayout(self)
-        self.btn_server = QPushButton(tr("Download from InaRISK Server (GeoServer)"))
-        self.btn_local = QPushButton(tr("Process Local Zip Files"))
-        
-        layout.addWidget(self.btn_server)
-        layout.addWidget(self.btn_local)
-        
-        self.mode = None
-        self.btn_server.clicked.connect(self.select_server)
-        self.btn_local.clicked.connect(self.select_local)
-        
-    def select_server(self):
-        self.mode = 'server'
-        self.accept()
-
-class InaRiskToQgisDialog(QDialog):
+class InaRiskSpatialPlanningDialog(QDialog):
     def __init__(self, iface, parent=None):
-        super(InaRiskToQgisDialog, self).__init__(parent or iface.mainWindow())
+        super(InaRiskSpatialPlanningDialog, self).__init__(parent)
         self.iface = iface
         
-        self.i18n = I18nManager.get_instance()
-
-        self.setWindowTitle(tr('InaRISK to QGIS'))
-        self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), 'earth.svg')))
-        self.resize(850, 600)
+        self.setWindowTitle(tr("InaRISK for Spatial Planning"))
+        self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), 'layer.svg')))
+        self.resize(780, 560)
+        self.setMinimumSize(700, 480)
         
         main_layout = QVBoxLayout(self)
-
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         
-        # --- LEFT PANE (Tabs) ---
+        # Header layout
+        header_layout = QHBoxLayout()
+        header_layout.addStretch()
+        
+        self.lbl_lang = QLabel(tr("Language:"))
+        self.cmb_lang = QComboBox()
+        self.cmb_lang.addItems(["English", "Bahasa Indonesia"])
+        
+        current_lang = I18nManager.get_instance().current_lang
+        idx = self.cmb_lang.findText(current_lang)
+        if idx != -1:
+            self.cmb_lang.setCurrentIndex(idx)
+        self.cmb_lang.currentIndexChanged.connect(self.change_language)
+        
+        header_layout.addWidget(self.lbl_lang)
+        header_layout.addWidget(self.cmb_lang)
+        main_layout.addLayout(header_layout)
+        
+        # Splitter between Tabs and Help panel
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(self.splitter, 1)
+
+        # Tabs
         self.tabs = QTabWidget()
+        self.splitter.addWidget(self.tabs)
+        
+        # Help Panel
+        self.help_browser = QTextBrowser()
+        self.help_browser.setOpenExternalLinks(True)
+        self.help_browser.setHtml(self.get_help_html())
+        self.splitter.addWidget(self.help_browser)
+        
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
         
         # 1. Parameters Tab
         self.tab_params = QWidget()
         params_layout = QVBoxLayout(self.tab_params)
+        params_layout.setContentsMargins(6, 6, 6, 6)
         
-        # Top bar with language selector
-        lang_layout = QHBoxLayout()
-        lang_layout.addStretch()
-        self.cmb_lang = QComboBox()
-        self.cmb_lang.addItems(["English", "Bahasa Indonesia"])
-        if self.i18n.current_lang == "Bahasa Indonesia":
-            self.cmb_lang.setCurrentText("Bahasa Indonesia")
-        else:
-            self.cmb_lang.setCurrentText("English")
-        self.cmb_lang.currentIndexChanged.connect(self.change_language)
-        
-        self.lbl_language = QLabel(tr("Language:"))
-        lang_layout.addWidget(self.lbl_language)
-        lang_layout.addWidget(self.cmb_lang)
-        params_layout.addLayout(lang_layout)
-        
+        from qgis.PyQt.QtWidgets import QScrollArea
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(4, 4, 4, 4)
+
+        # Hazard Disasters Selection (Hazard only)
+        self.disaster_group = QGroupBox(tr("Disaster Prone Area"))
+        disaster_form = QFormLayout(self.disaster_group)
+        disaster_form.setVerticalSpacing(4)
         
-        # Source Settings
-        self.server_widget = QGroupBox(tr("Index Options"))
-        server_form = QFormLayout(self.server_widget)
-        server_form.setVerticalSpacing(4)
-        self.cmb_server_index = QComboBox()
-        self.cmb_server_index.addItem(tr("Hazard"), "Bahaya")
-        self.cmb_server_index.addItem(tr("Risk"), "Risiko")
-        self.cmb_server_index.addItem(tr("Vulnerability"), "Kerentanan")
         self.list_server_disaster = QListWidget()
+        self.list_server_disaster.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.list_server_disaster.setMinimumHeight(135)
         self.list_server_disaster.setStyleSheet("""
             QListWidget {
@@ -93,20 +87,14 @@ class InaRiskToQgisDialog(QDialog):
                 margin: 0px;
             }
         """)
+        self.populate_hazard_disasters()
         
         self.chk_all_disasters = QCheckBox(tr("Download all types"))
-        self.chk_all_disasters.stateChanged.connect(self.toggle_all_disasters)
+        self.chk_all_disasters.toggled.connect(self.toggle_all_disasters)
         
-        self.cmb_server_index.currentIndexChanged.connect(self.update_server_disasters)
-        self.update_server_disasters()
-        
-        self.lbl_index_type = QLabel(tr("Index Type:"))
-        self.lbl_disaster = QLabel(tr("Disaster:"))
-        
-        server_form.addRow(self.lbl_index_type, self.cmb_server_index)
-        server_form.addRow(self.lbl_disaster, self.list_server_disaster)
-        server_form.addRow("", self.chk_all_disasters)
-        self.scroll_layout.addWidget(self.server_widget)
+        disaster_form.addRow(self.list_server_disaster)
+        disaster_form.addRow("", self.chk_all_disasters)
+        self.scroll_layout.addWidget(self.disaster_group)
 
         # Area Selection
         self.area_group = QGroupBox(tr("Area Selection"))
@@ -127,7 +115,6 @@ class InaRiskToQgisDialog(QDialog):
         aoi_layout.addWidget(self.btn_browse_aoi)
         
         self.lbl_area_layer = QLabel(tr("Area Layer:"))
-        
         area_form.addRow(self.lbl_area_layer, aoi_layout)
         self.scroll_layout.addWidget(self.area_group)
 
@@ -157,13 +144,15 @@ class InaRiskToQgisDialog(QDialog):
         
         self.cmb_out_type = QComboBox()
         self.cmb_out_type.addItems([tr("Output as Raster"), tr("Output as Vector (Polygons)")])
-        
+        self.cmb_out_type.currentIndexChanged.connect(self.toggle_format_options)
+        self.cmb_out_type.setCurrentIndex(1) # Default to Vector for Spatial Planning
         self.lbl_out_type = QLabel(tr("Output Type:"))
         out_layout.addRow(self.lbl_out_type, self.cmb_out_type)
         
         self.cmb_format = QComboBox()
         self.lbl_format = QLabel(tr("Format:"))
         out_layout.addRow(self.lbl_format, self.cmb_format)
+        self.toggle_format_options()
         
         self.cmb_classify = QComboBox()
         self.cmb_classify.addItems([tr("Classify"), tr("Do Not Classify")])
@@ -181,7 +170,7 @@ class InaRiskToQgisDialog(QDialog):
         self.out_group.setLayout(out_layout)
         self.scroll_layout.addWidget(self.out_group)
         
-        self.scroll_layout.addStretch() # Push everything up
+        self.scroll_layout.addStretch()
         self.scroll.setWidget(self.scroll_content)
         params_layout.addWidget(self.scroll)
         self.tabs.addTab(self.tab_params, tr("Parameters"))
@@ -194,71 +183,63 @@ class InaRiskToQgisDialog(QDialog):
         log_layout.addWidget(self.txt_log)
         self.tabs.addTab(self.tab_log, tr("Log"))
         
-        self.splitter.addWidget(self.tabs)
-
-        # --- RIGHT PANE (Help Browser) ---
-        self.help_browser = QTextBrowser()
-        self.help_browser.setHtml(self.get_help_html())
-        self.splitter.addWidget(self.help_browser)
-        
-        self.splitter.setSizes([550, 300])
-        main_layout.addWidget(self.splitter)
-
-        # --- BOTTOM BAR ---
+        # Bottom controls
+        bottom_layout = QHBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        main_layout.addWidget(self.progress_bar)
+        bottom_layout.addWidget(self.progress_bar)
         
-        self.buttonBox = QDialogButtonBox()
         self.btn_run = QPushButton(tr("Run"))
-        self.btn_close = QPushButton(tr("Close"))
-        self.buttonBox.addButton(self.btn_run, QDialogButtonBox.ButtonRole.ActionRole)
-        self.buttonBox.addButton(self.btn_close, QDialogButtonBox.ButtonRole.RejectRole)
-        
         self.btn_run.clicked.connect(self.run_process)
-        self.btn_close.clicked.connect(self.reject)
-        main_layout.addWidget(self.buttonBox)
+        self.btn_close = QPushButton(tr("Close"))
+        self.btn_close.clicked.connect(self.close)
         
-        # Connect format toggle
-        self.cmb_out_type.currentIndexChanged.connect(self.toggle_format_options)
-        self.toggle_format_options() # Initial setup
-        
-    def change_language(self, index):
-        lang = self.cmb_lang.currentText()
-        self.i18n.set_language(lang)
-        self.retranslate_ui()
+        bottom_layout.addWidget(self.btn_run)
+        bottom_layout.addWidget(self.btn_close)
+        main_layout.addLayout(bottom_layout)
 
-    def retranslate_ui(self):
-        self.setWindowTitle(tr('InaRISK to QGIS'))
-        self.lbl_language.setText(tr("Language:"))
-        self.server_widget.setTitle(tr("Index Options"))
-        
-        # update index types
-        idx_idx = self.cmb_server_index.currentIndex()
-        self.cmb_server_index.blockSignals(True)
-        self.cmb_server_index.setItemText(0, tr("Hazard"))
-        self.cmb_server_index.setItemText(1, tr("Risk"))
-        self.cmb_server_index.setItemText(2, tr("Vulnerability"))
-        self.cmb_server_index.blockSignals(False)
-        
-        # save selected disaster
+    def populate_hazard_disasters(self):
         checked_data = []
         for i in range(self.list_server_disaster.count()):
             item = self.list_server_disaster.item(i)
             if item.checkState() == Qt.CheckState.Checked:
                 checked_data.append(item.data(Qt.ItemDataRole.UserRole))
                 
-        self.update_server_disasters()
+        self.list_server_disaster.clear()
+        disasters = [
+            ('Flood', 'Banjir'), ('Flash Flood', 'Banjir Bandang'), ('Extreme Weather', 'Cuaca Ekstrim'), 
+            ('Extreme Wave and Abrasion', 'Gelombang Ekstrim dan Abrasi'), ('Earthquake', 'Gempa Bumi'), 
+            ('Volcano', 'Gunung Api'), ('Drought', 'Kekeringan'), ('Liquefaction', 'Likuefaksi'), 
+            ('Forest and Land Fire', 'Karhutla'), ('Landslide', 'Tanah Longsor'), ('Tsunami', 'Tsunami'),
+            ('Multi', 'Multi')
+        ]
         
-        for i in range(self.list_server_disaster.count()):
-            item = self.list_server_disaster.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) in checked_data:
+        for eng, ind in disasters:
+            item = QListWidgetItem(tr(eng))
+            item.setData(Qt.ItemDataRole.UserRole, ind)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            if ind in checked_data:
                 item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
+            self.list_server_disaster.addItem(item)
+            
+        if hasattr(self, 'chk_all_disasters') and self.chk_all_disasters.isChecked():
+            for i in range(self.list_server_disaster.count()):
+                self.list_server_disaster.item(i).setCheckState(Qt.CheckState.Checked)
+
+    def change_language(self, index):
+        lang = self.cmb_lang.currentText()
+        I18nManager.get_instance().set_language(lang)
+        self.retranslate_ui()
+
+    def retranslate_ui(self):
+        self.setWindowTitle(tr("InaRISK for Spatial Planning"))
+        self.lbl_lang.setText(tr("Language:"))
+        self.disaster_group.setTitle(tr("Disaster Prone Area"))
+        self.populate_hazard_disasters()
         
         self.chk_all_disasters.setText(tr("Download all types"))
-        self.lbl_index_type.setText(tr("Index Type:"))
-        self.lbl_disaster.setText(tr("Disaster:"))
         self.area_group.setTitle(tr("Area Selection"))
         self.btn_browse_aoi.setText(tr("Browse"))
         self.lbl_area_layer.setText(tr("Area Layer:"))
@@ -270,11 +251,11 @@ class InaRiskToQgisDialog(QDialog):
         self.btn_browse_out.setText(tr("Browse"))
         self.lbl_save_folder.setText(tr("Save Folder:"))
         
-        # Update combo box items
         self.cmb_out_type.blockSignals(True)
         out_type_idx = self.cmb_out_type.currentIndex()
         self.cmb_out_type.setItemText(0, tr("Output as Raster"))
         self.cmb_out_type.setItemText(1, tr("Output as Vector (Polygons)"))
+        self.cmb_out_type.setCurrentIndex(out_type_idx)
         self.cmb_out_type.blockSignals(False)
         
         self.lbl_out_type.setText(tr("Output Type:"))
@@ -315,15 +296,15 @@ class InaRiskToQgisDialog(QDialog):
             </style>
         </head>
         <body>
-            <h2>{tr('InaRISK to QGIS')}</h2>
-            <p>{tr('Download and process InaRISK disaster layers directly from BNPB servers.')}</p>
+            <h2>{tr('InaRISK for Spatial Planning')}</h2>
+            <p>{tr('Extract and format BNPB Hazard data into standardized Kawasan Rawan Bencana (KRB) layers for spatial planning (RTRW/RDTR).')}</p>
             
             <h3>{tr('User Guide')}</h3>
-            <p>{tr('Select the index type and disaster layers, then specify an Area Layer (AOI) to define the spatial boundary.')}</p>
-            <p>{tr('Choose Raster (.tif) or Vector Polygons (.shp, .gpkg, .geojson, .kml). Classification categorizes continuous index values into three BNPB tiers: Low (0 - 0.333), Medium (0.333 - 0.667), and High (0.667 - 1.0) with optional gradual symbology. Leave the save folder blank to generate temporary layers.')}</p>
+            <p>{tr('Select the hazard layers and specify the Area Layer (AOI) boundary.')}</p>
+            <p>{tr('Outputs use standard KRB naming (e.g. KRB_BANJIR_AR). Classification applies BNPB equal-interval tiers: Low (0 - 0.333), Medium (0.333 - 0.667), and High (0.667 - 1.0) per Perka BNPB No. 2/2012.')}</p>
             
             <h3>{tr('Vector Attributes')}</h3>
-            <p>{tr("Vector outputs include 'Kelas' (index category), 'Value' (index range), and 'Source' (attribution with optional access year).")}</p>
+            <p>{tr("Vector polygon layers include attribute fields for 'Kelas' (e.g. Kawasan Rawan Bencana Banjir Tinggi), 'Value' (index range), and 'Source' (attribution with optional access year).")}</p>
 
             <div class="footer-box">
                 <b>{tr('Notice:')}</b> {tr('Requires an active internet connection to access BNPB servers.')}<br>
@@ -336,11 +317,11 @@ class InaRiskToQgisDialog(QDialog):
     def run_process(self):
         from .core_logic import InaRiskProcessor
         self.btn_run.setEnabled(False)
-        self.tabs.setCurrentIndex(1) # Switch to Log tab
+        self.tabs.setCurrentIndex(1)
         self.progress_bar.setValue(0)
         self.txt_log.clear()
         
-        processor = InaRiskProcessor(self, self.iface)
+        processor = InaRiskProcessor(self, self.iface, is_spatial_planning=True)
         processor.process()
         
         self.btn_run.setEnabled(True)
@@ -349,7 +330,7 @@ class InaRiskToQgisDialog(QDialog):
         is_vector = (self.cmb_out_type.currentIndex() == 1)
         self.cmb_format.clear()
         if is_vector:
-            self.cmb_format.addItems(['.shp', '.gpkg', '.geojson', '.kml'])
+            self.cmb_format.addItems(['.gpkg', '.shp', '.geojson', '.kml'])
         else:
             self.cmb_format.addItems(['.tif'])
 
@@ -361,57 +342,17 @@ class InaRiskToQgisDialog(QDialog):
         else:
             self.chk_symbolize.setChecked(True)
 
-    def update_server_disasters(self):
-        index_type = self.cmb_server_index.currentData()
-        self.list_server_disaster.clear()
-        
-        if index_type == 'Bahaya':
-            disasters = [
-                ('Flood', 'Banjir'), ('Flash Flood', 'Banjir Bandang'), ('Extreme Weather', 'Cuaca Ekstrim'), 
-                ('Extreme Wave and Abrasion', 'Gelombang Ekstrim dan Abrasi'), ('Earthquake', 'Gempa Bumi'), 
-                ('Volcano', 'Gunung Api'), ('Drought', 'Kekeringan'), ('Liquefaction', 'Likuefaksi'), 
-                ('Forest and Land Fire', 'Karhutla'), ('Landslide', 'Tanah Longsor'), ('Tsunami', 'Tsunami'),
-                ('Multi', 'Multi')
-            ]
-        elif index_type == 'Kerentanan':
-            disasters = [
-                ('Flood', 'Banjir'), ('Flash Flood', 'Banjir Bandang'), ('Extreme Weather', 'Cuaca Ekstrim'), 
-                ('Extreme Wave and Abrasion', 'Gelombang Ekstrim dan Abrasi'), ('Earthquake', 'Gempa Bumi'), 
-                ('Volcano', 'Gunung Api'), ('Drought', 'Kekeringan'), ('Liquefaction', 'Likuefaksi'), 
-                ('Forest and Land Fire', 'Karhutla'), ('Landslide', 'Tanah Longsor'), ('Tsunami', 'Tsunami'),
-                ('Multi', 'Multi')
-            ]
-        elif index_type == 'Risiko':
-            disasters = [
-                ('Flood', 'Banjir'), ('Flash Flood', 'Banjir Bandang'), ('Extreme Weather', 'Cuaca Ekstrim'), 
-                ('Extreme Wave and Abrasion', 'Gelombang Ekstrim dan Abrasi'), ('Earthquake', 'Gempa Bumi'), 
-                ('Volcano', 'Gunung Api'), ('Drought', 'Kekeringan'), ('Liquefaction', 'Likuefaksi'), 
-                ('Forest and Land Fire', 'Karhutla'), ('Landslide', 'Tanah Longsor'), ('Tsunami', 'Tsunami'),
-                ('Multi', 'Multi')
-            ]
-        else:
-            disasters = []
-            
-        for eng, ind in disasters:
-            item = QListWidgetItem(tr(eng))
-            item.setData(Qt.ItemDataRole.UserRole, ind)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-            self.list_server_disaster.addItem(item)
-            
-        if hasattr(self, 'chk_all_disasters') and self.chk_all_disasters.isChecked():
-            for i in range(self.list_server_disaster.count()):
-                self.list_server_disaster.item(i).setCheckState(Qt.CheckState.Checked)
-
     def browse_out_dir(self):
         directory = QFileDialog.getExistingDirectory(self, tr("Select Output Folder"))
         if directory:
             self.txt_out_dir.setText(directory)
 
     def browse_aoi(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, tr("Select AOI Vector File"), "", tr("Vector files (*.shp *.gpkg *.geojson *.kml)"))
-        if file_path:
-            self.cmb_aoi.setCurrentText(file_path)
+        fpath, _ = QFileDialog.getOpenFileName(
+            self, tr("Select AOI Vector File"), "", tr("Vector files (*.shp *.gpkg *.geojson *.kml)")
+        )
+        if fpath:
+            self.cmb_aoi.setEditText(fpath)
 
     def toggle_all_disasters(self):
         if hasattr(self, 'chk_all_disasters'):

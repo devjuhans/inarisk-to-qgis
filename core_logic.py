@@ -1,9 +1,9 @@
 import os
 import zipfile
 import processing
-from qgis.core import (QgsProject, QgsRasterLayer, QgsVectorLayer, QgsMessageLog, Qgis)
+from qgis.core import (QgsProject, QgsRasterLayer, QgsVectorLayer, QgsMessageLog, Qgis, QgsGeometry, QgsFeature, QgsField, QgsSpatialIndex)
 from qgis.PyQt.QtWidgets import QApplication
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, QVariant
 from .i18n_manager import tr
 
 SERVER_MAPPING = {
@@ -16,8 +16,10 @@ SERVER_MAPPING = {
         'Gunung Api': 'INDEKS_BAHAYA_GUNUNGAPI',
         'Kekeringan': 'INDEKS_BAHAYA_KEKERINGAN',
         'Likuefaksi': 'INDEKS_BAHAYA_LIKUEFAKSI',
+        'Karhutla': 'INDEKS_BAHAYA_KARHUTLA',
         'Tanah Longsor': 'INDEKS_BAHAYA_TANAHLONGSOR',
-        'Tsunami': 'INDEKS_BAHAYA_TSUNAMI'
+        'Tsunami': 'INDEKS_BAHAYA_TSUNAMI',
+        'Multi': 'INDEKS_MULTI_BAHAYA'
     },
     'Kerentanan': {
         'Banjir': 'INDEKS_KERENTANAN_BANJIR',
@@ -28,18 +30,32 @@ SERVER_MAPPING = {
         'Gunung Api': 'INDEKS_KERENTANAN_LETUSAN_GUNUNGAPI',
         'Kekeringan': 'INDEKS_KERENTANAN_KEKERINGAN',
         'Likuefaksi': 'INDEKS_KERENTANAN_LIKUEFAKSI',
+        'Karhutla': 'INDEKS_KERENTANAN_KEBAKARAN_HUTAN_LAHAN',
         'Tanah Longsor': 'INDEKS_KERENTANAN_TANAH_LONGSOR',
-        'Tsunami': 'INDEKS_KERENTANAN_TSUNAMI'
+        'Tsunami': 'INDEKS_KERENTANAN_TSUNAMI',
+        'Multi': 'INDEKS_KERENTANAN_MULTI_BAHAYA'
     },
     'Risiko': {
-        'Tanah Longsor': 'INDEKS_RISIKO_TANAH_LONGSOR'
+        'Banjir': 'layer_risiko_banjir',
+        'Banjir Bandang': 'layer_risiko_banjir_bandang',
+        'Cuaca Ekstrim': 'layer_risiko_cuaca_ekstrim',
+        'Gelombang Ekstrim dan Abrasi': 'layer_risiko_gelombang_ekstrim_dan_abrasi',
+        'Gempa Bumi': 'layer_risiko_gempabumi',
+        'Gunung Api': 'layer_risiko_letusan_gunungapi',
+        'Kekeringan': 'layer_risiko_kekeringan',
+        'Likuefaksi': 'layer_risiko_likuefaksi',
+        'Karhutla': 'layer_risiko_kebakaran_hutan_dan_lahan',
+        'Tanah Longsor': 'INDEKS_RISIKO_TANAH_LONGSOR',
+        'Tsunami': 'layer_risiko_tsunami',
+        'Multi': 'layer_risiko_multi'
     }
 }
 
 class InaRiskProcessor:
-    def __init__(self, dlg, iface):
+    def __init__(self, dlg, iface, is_spatial_planning=False):
         self.dlg = dlg
         self.iface = iface
+        self.is_spatial_planning = is_spatial_planning
         
     def log(self, message):
         from qgis.PyQt.QtCore import QCoreApplication, QEventLoop
@@ -62,10 +78,11 @@ class InaRiskProcessor:
             out_dir = self.dlg.txt_out_dir.text()
             out_format = self.dlg.cmb_format.currentText()
             aoi_layer_text = self.dlg.cmb_aoi.currentText()
+            year = self.dlg.txt_year.text().strip() if hasattr(self.dlg, 'txt_year') else ""
             
-            do_classify = self.dlg.cmb_classify.currentText() == tr("Classify")
-            do_vector = (self.dlg.cmb_out_type.currentText() == tr("Output as Vector (Polygons)"))
-            do_simplify = self.dlg.chk_simplify.isChecked()
+            do_classify = (self.dlg.cmb_classify.currentIndex() == 0)
+            do_vector = (self.dlg.cmb_out_type.currentIndex() == 1)
+            do_symbolize = self.dlg.chk_symbolize.isChecked() and do_classify
             
             is_temp = not self.dlg.txt_out_dir.text().strip() or self.dlg.txt_out_dir.text() == tr("[Create temporary layer]")
             if is_temp:
@@ -101,51 +118,64 @@ class InaRiskProcessor:
                 self.iface.messageBar().pushMessage(tr("Error"), tr("Downloading from server requires an AOI layer to define the extent."), level=Qgis.MessageLevel.Warning, duration=5)
                 return
                 
-            index_type = self.dlg.cmb_server_index.currentData()
-            if hasattr(self.dlg, 'chk_all_disasters') and self.dlg.chk_all_disasters.isChecked():
-                disasters = [self.dlg.cmb_server_disaster.itemData(i) for i in range(self.dlg.cmb_server_disaster.count())]
+            if self.is_spatial_planning:
+                index_type = 'Bahaya'
             else:
-                disasters = [self.dlg.cmb_server_disaster.currentData()]
+                index_type = self.dlg.cmb_server_index.currentData()
+
+            disasters = []
+            if hasattr(self.dlg, 'chk_all_disasters') and self.dlg.chk_all_disasters.isChecked():
+                disasters = [self.dlg.list_server_disaster.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.dlg.list_server_disaster.count())]
+            else:
+                for i in range(self.dlg.list_server_disaster.count()):
+                    item = self.dlg.list_server_disaster.item(i)
+                    if item.checkState() == Qt.CheckState.Checked:
+                        disasters.append(item.data(Qt.ItemDataRole.UserRole))
+                        
+            if not disasters:
+                self.iface.messageBar().pushMessage(tr("Error"), tr("Please select at least one disaster."), level=Qgis.MessageLevel.Warning, duration=5)
+                return
             
             total = len(disasters)
             summary_messages = []
             for i, d in enumerate(disasters):
-                self.log(f"{tr('--- Processing')} {d} ({i+1}/{total}) ---")
+                self.log(f"{tr('Processing')}: {d} ({i+1}/{total})")
                 status = self._process_single(index_type=index_type, disaster_type=d,
                                                out_dir=out_dir, out_format=out_format, aoi_layer=aoi_layer,
-                                               do_classify=do_classify, do_vector=do_vector, do_simplify=do_simplify,
-                                               is_temp=is_temp, progress_base=10 + (i/total)*80, progress_scale=80/total)
+                                               do_classify=do_classify, do_vector=do_vector,
+                                               do_symbolize=do_symbolize, is_temp=is_temp, year=year,
+                                               progress_base=10 + (i/total)*80, progress_scale=80/total)
                 
                 if status == "SUCCESS":
-                    summary_messages.append(f"[{d.upper()}] {tr('Successfully Processed')}")
+                    summary_messages.append(f"- {d}: {tr('Success')}")
                 elif status == "NO_DATA":
-                    summary_messages.append(f"[{d.upper()}] {tr('No Data in This Area')}")
+                    summary_messages.append(f"- {d}: {tr('No data found in selected area')}")
                 elif status == "SERVER_ERROR":
-                    self.log(f"{tr('Warning: Connection/Server failed for')} {d}, {tr('continuing to next disaster...')}")
-                    summary_messages.append(f"[{d.upper()}] {tr('Server/Connection Error')}")
+                    self.log(f"{tr('Warning: Server connection failed for')} {d}. {tr('Proceeding to next item.')}")
+                    summary_messages.append(f"- {d}: {tr('Server/Connection error')}")
                 else:
-                    self.log(f"{tr('Warning: Processing failed for')} {d}, {tr('continuing to next disaster...')}")
-                    summary_messages.append(f"[{d.upper()}] {tr('Processing Error')}")
+                    self.log(f"{tr('Warning: Processing failed for')} {d}. {tr('Proceeding to next item.')}")
+                    summary_messages.append(f"- {d}: {tr('Processing error')}")
             
             QApplication.restoreOverrideCursor()
             self.set_progress(100)
-            self.log(f"{tr('Successfully finished processing!')}")
+            self.log(f"{tr('Processing completed.')}")
             
-            self.log(f"\n{tr('--- PROCESSING SUMMARY ---')}")
-            for i, msg in enumerate(summary_messages, 1):
-                self.log(f"{i}. {msg}")
+            self.log(f"\n{tr('Processing Summary')}:")
+            for msg in summary_messages:
+                self.log(msg)
             self.log("--------------------------\n")
             
             from qgis.PyQt.QtWidgets import QMessageBox
-            summary_text = "\n".join([f"{i}. {msg}" for i, msg in enumerate(summary_messages, 1)])
-            QMessageBox.information(self.dlg, tr("Processing Finished"), f"{tr('Successfully finished processing!')}\n\n{tr('--- PROCESSING SUMMARY ---')}\n{summary_text}")
+            summary_text = "\n".join(summary_messages)
+            QMessageBox.information(self.dlg, tr("Completed"), f"{tr('Processing has completed.')}\n\n{tr('Summary')}:\n{summary_text}")
         except Exception as e:
             self.log(f"{tr('Error')}: {str(e)}")
             self.iface.messageBar().pushMessage(tr("Error"), str(e), level=Qgis.MessageLevel.Critical, duration=10)
         finally:
             QApplication.restoreOverrideCursor()
 
-    def _process_single(self, index_type, disaster_type, out_dir, out_format, aoi_layer, do_classify, do_vector, do_simplify, is_temp, progress_base, progress_scale):
+    def _process_single(self, index_type, disaster_type, out_dir, out_format, aoi_layer, do_classify, do_vector, do_symbolize, is_temp, year, progress_base, progress_scale):
         try:
             layer_name = SERVER_MAPPING.get(index_type, {}).get(disaster_type)
             if not layer_name:
@@ -154,7 +184,7 @@ class InaRiskProcessor:
                 
             dis_str = disaster_type.upper().replace(" ", "_")
             
-            self.log(f"{tr('Downloading')} {layer_name} {tr('from BNPB ArcGIS ImageServer...')}")
+            self.log(f"{tr('Downloading')} {layer_name}...")
             self.set_progress(progress_base + 10 * progress_scale / 80)
             
             extent = aoi_layer.extent()
@@ -193,7 +223,7 @@ class InaRiskProcessor:
             
             buffered_aoi_path = None
             if do_vector and aoi_layer:
-                self.log(tr("Buffering AOI by 0.0005 degrees (~50m)..."))
+                self.log(tr("Buffering AOI..."))
                 self.set_progress(progress_base + 35 * progress_scale / 80)
                 buffered_aoi_path = os.path.join(out_dir, f"temp_buffered_aoi_{disaster_type}.gpkg")
                 processing.run("native:buffer", {
@@ -204,7 +234,7 @@ class InaRiskProcessor:
                 })
             
             if aoi_layer:
-                self.log(tr("Clipping raster to AOI..."))
+                self.log(tr("Clipping raster..."))
                 self.set_progress(progress_base + 40 * progress_scale / 80)
                 clipped_path = os.path.join(out_dir, f"temp_clipped_{disaster_type}.tif")
                 clip_mask = buffered_aoi_path if do_vector else aoi_layer
@@ -218,7 +248,7 @@ class InaRiskProcessor:
             from qgis.core import QgsRasterBandStats
             chk_layer = QgsRasterLayer(current_layer_path, "chk")
             if chk_layer.isValid():
-                stats = chk_layer.dataProvider().bandStatistics(1, QgsRasterBandStats.All)
+                stats = chk_layer.dataProvider().bandStatistics(1, QgsRasterBandStats.Stats.All)
                 has_data = True
                 if stats.elementCount == 0:
                     has_data = False
@@ -230,14 +260,14 @@ class InaRiskProcessor:
                     has_data = False
                     
                 if not has_data:
-                    self.log(f"{tr('No Data Found for')} {disaster_type} {tr('in selected area.')}")
+                    self.log(f"{tr('No data found for')} {disaster_type}.")
                     return "NO_DATA"
                     
             if do_classify:
-                self.log(tr("Classifying raster (0-0.3, 0.3-0.6, 0.6-1.0)..."))
+                self.log(tr("Classifying raster..."))
                 self.set_progress(progress_base + 50 * progress_scale / 80)
                 classified_path = os.path.join(out_dir, f"temp_classified_{disaster_type}.tif")
-                table = [0, 0.3, 1, 0.3, 0.6, 2, 0.6, 1.0, 3]
+                table = [0, 0.333, 1, 0.333, 0.667, 2, 0.667, 1.0, 3]
                 processing.run("native:reclassifybytable", {
                     'INPUT_RASTER': current_layer_path,
                     'RASTER_BAND': 1,
@@ -254,23 +284,40 @@ class InaRiskProcessor:
             dis_eng = {'Banjir': 'Flood', 'Banjir Bandang': 'Flash Flood', 'Cuaca Ekstrim': 'Extreme Weather',
                        'Gelombang Ekstrim dan Abrasi': 'Extreme Wave and Abrasion', 'Gempa Bumi': 'Earthquake',
                        'Gunung Api': 'Volcano', 'Kekeringan': 'Drought', 'Likuefaksi': 'Liquefaction',
-                       'Tanah Longsor': 'Landslide', 'Tsunami': 'Tsunami'}.get(disaster_type, disaster_type)
+                       'Karhutla': 'Forest and Land Fire', 'Tanah Longsor': 'Landslide', 'Tsunami': 'Tsunami',
+                       'Multi': 'Multi'}.get(disaster_type, disaster_type)
                        
             clean_disaster = tr(dis_eng).upper().replace(" ", "_")
-            prefix_layer = tr(idx_eng + ' Index').upper().replace(" ", "_")
+            if self.is_spatial_planning:
+                prefix = f"{tr('Disaster Prone Area')} {tr(dis_eng)}"
+                prefix_layer = f"KRB_{clean_disaster}"
+            else:
+                prefix = f"{tr(idx_eng + ' Index')} {tr(dis_eng)}"
+                prefix_layer = f"{tr(idx_eng + ' Index').upper().replace(' ', '_')}_{clean_disaster}"
             
             if do_vector:
-                out_name = f"{prefix_layer}_{clean_disaster}_AR{out_format}"
-                layer_name = f"{prefix_layer}_{clean_disaster}_AR"
+                out_name = f"{prefix_layer}_AR{out_format}"
+                layer_name = f"{prefix_layer}_AR"
             else:
-                out_name = f"{prefix_layer}_{clean_disaster}{out_format}"
-                layer_name = f"{prefix_layer}_{clean_disaster}"
+                out_name = f"{prefix_layer}{out_format}"
+                layer_name = f"{prefix_layer}"
                 
             final_out_path = os.path.join(out_dir, out_name)
-
+            
             if do_vector:
-                self.log(tr("Converting to Vector..."))
-                self.set_progress(progress_base + 60 * progress_scale / 80)
+                self.log(tr("Filtering raster noise (Sieve)..."))
+                self.set_progress(progress_base + 35 * progress_scale / 80)
+                sieved_path = os.path.join(out_dir, f"temp_sieved_{disaster_type}.tif")
+                res_sieve = processing.run("gdal:sieve", {
+                    'INPUT': current_layer_path,
+                    'THRESHOLD': 8,
+                    'EIGHT_CONNECTEDNESS': True,
+                    'OUTPUT': sieved_path
+                })
+                current_layer_path = res_sieve['OUTPUT']
+
+                self.log(tr("Converting to vector format..."))
+                self.set_progress(progress_base + 55 * progress_scale / 80)
                 
                 vector_path = os.path.join(out_dir, f"temp_vectorized_{disaster_type}.gpkg")
                 res_poly = processing.run("gdal:polygonize", {
@@ -280,22 +327,10 @@ class InaRiskProcessor:
                     'OUTPUT': vector_path
                 })
                 current_vector_path = res_poly['OUTPUT']
+                
 
-                if do_simplify:
-                    self.log(tr("Smoothing Polygons..."))
-                    self.set_progress(progress_base + 70 * progress_scale / 80)
-                    smoothed_path = os.path.join(out_dir, f"temp_smoothed_{disaster_type}.gpkg")
-                    res_smooth = processing.run("native:smoothgeometry", {
-                        'INPUT': current_vector_path,
-                        'ITERATIONS': 3,
-                        'OFFSET': 0.25,
-                        'MAX_ANGLE': 180,
-                        'OUTPUT': smoothed_path
-                    })
-                    current_vector_path = res_smooth['OUTPUT']
-                    
                 if aoi_layer:
-                    self.log(tr("Clipping vector to real AOI..."))
+                    self.log(tr("Clipping vector..."))
                     self.set_progress(progress_base + 75 * progress_scale / 80)
                     cropped_path = os.path.join(out_dir, f"temp_cropped_{disaster_type}.gpkg")
                     res_clip = processing.run("native:clip", {
@@ -305,6 +340,60 @@ class InaRiskProcessor:
                     })
                     current_vector_path = res_clip['OUTPUT']
                     
+                vec_temp = QgsVectorLayer(current_vector_path, "temp_vec", "ogr")
+                if not vec_temp.isValid() or vec_temp.featureCount() == 0:
+                    self.log(f"{tr('No data found for')} {disaster_type}.")
+                    return "NO_DATA"
+
+                self.log(tr("Adding attribute fields..."))
+                self.set_progress(progress_base + 78 * progress_scale / 80)
+                field_class_name = "Kelas"
+                vec_temp.startEditing()
+                vec_temp.dataProvider().addAttributes([
+                    QgsField(field_class_name, QVariant.String),
+                    QgsField("Value", QVariant.String),
+                    QgsField("Source", QVariant.String)
+                ])
+                vec_temp.updateFields()
+                
+                idx_kelas = vec_temp.fields().indexOf(field_class_name)
+                idx_val = vec_temp.fields().indexOf("Value")
+                idx_src = vec_temp.fields().indexOf("Source")
+                idx_class = vec_temp.fields().indexOf("CLASS")
+                
+                labels = {
+                    1: f"{prefix} {tr('Low')}",
+                    2: f"{prefix} {tr('Medium')}",
+                    3: f"{prefix} {tr('High')}"
+                }
+                
+                for feat in vec_temp.getFeatures():
+                    cls_val = feat.attribute(idx_class)
+                    if do_classify and cls_val in labels:
+                        feat.setAttribute(idx_kelas, labels[cls_val])
+                    else:
+                        feat.setAttribute(idx_kelas, str(cls_val) if cls_val is not None else "")
+                    
+                    if do_classify:
+                        if cls_val == 1:
+                            feat.setAttribute(idx_val, "0 - 0.333")
+                        elif cls_val == 2:
+                            feat.setAttribute(idx_val, "0.333 - 0.667")
+                        elif cls_val == 3:
+                            feat.setAttribute(idx_val, "0.667 - 1.0")
+                    else:
+                        feat.setAttribute(idx_val, str(cls_val) if cls_val is not None else "")
+                    
+                    if year:
+                        source_str = tr("InaRISK, National Disaster Management Authority (BNPB), Access Year {year}").format(year=year)
+                    else:
+                        source_str = tr("InaRISK, National Disaster Management Authority (BNPB)")
+                    feat.setAttribute(idx_src, source_str)
+                    vec_temp.updateFeature(feat)
+                
+                vec_temp.commitChanges()
+                del vec_temp
+                    
                 if is_temp:
                     temp_layer = QgsVectorLayer(current_vector_path, "temp", "ogr")
                     geom_name = "MultiPolygon"
@@ -312,7 +401,6 @@ class InaRiskProcessor:
                     layer.dataProvider().addAttributes(temp_layer.fields())
                     layer.updateFields()
                     
-                    from qgis.core import QgsFeature
                     features = []
                     for f in temp_layer.getFeatures():
                         new_f = QgsFeature(layer.fields())
@@ -327,53 +415,54 @@ class InaRiskProcessor:
                     })
                     layer = QgsVectorLayer(res_final['OUTPUT'], layer_name, "ogr")
                 
-                if layer.featureCount() == 0:
-                    self.log(f"{tr('No Data Found for')} {disaster_type} {tr('in selected area.')}")
-                    return "NO_DATA"
+                if not layer.isValid():
+                    self.log(f"{tr('Failed to load output layer:')} {final_out_path}")
+                    return "ERROR"
                 
-                self.log(tr("Adding fields (Classification, Value, Source)..."))
-                self.set_progress(progress_base + 78 * progress_scale / 80)
-                from qgis.core import QgsField
-                from qgis.PyQt.QtCore import QVariant
-                layer.startEditing()
-                layer.dataProvider().addAttributes([
-                    QgsField(tr("Classification"), QVariant.String),
-                    QgsField("Value", QVariant.String),
-                    QgsField("Source", QVariant.String)
-                ])
-                layer.updateFields()
-                
-                idx_kelas = layer.fields().indexOf(tr("Classification"))
-                idx_val = layer.fields().indexOf("Value")
-                idx_src = layer.fields().indexOf("Source")
-                idx_class = layer.fields().indexOf("CLASS")
-                
-                prefix = f"{tr(idx_eng + ' Index')} {tr(dis_eng)}"
-                
-                for feat in layer.getFeatures():
-                    cls_val = feat.attribute(idx_class)
-                    if cls_val == 1:
-                        feat.setAttribute(idx_kelas, f"{prefix} {tr('Low')}")
-                        feat.setAttribute(idx_val, "0 - 0.3")
-                    elif cls_val == 2:
-                        feat.setAttribute(idx_kelas, f"{prefix} {tr('Medium')}")
-                        feat.setAttribute(idx_val, "0.3 - 0.6")
-                    elif cls_val == 3:
-                        feat.setAttribute(idx_kelas, f"{prefix} {tr('High')}")
-                        feat.setAttribute(idx_val, "0.6 - 1.0")
+                if do_classify and do_symbolize:
+                    from qgis.core import QgsCategorizedSymbolRenderer, QgsRendererCategory, QgsSymbol
+                    from qgis.PyQt.QtGui import QColor
+                    categories = []
+                    colors = {1: QColor("green"), 2: QColor("yellow"), 3: QColor("red")}
+                    no_pen = getattr(Qt.PenStyle, 'NoPen', getattr(Qt, 'NoPen', None))
+                    for val in [1, 2, 3]:
+                        lbl = labels[val]
+                        symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+                        symbol.setColor(colors[val])
+                        symbol.setOpacity(0.7)
+                        if symbol.symbolLayerCount() > 0:
+                            sym_layer = symbol.symbolLayer(0)
+                            if hasattr(sym_layer, 'setStrokeStyle') and no_pen is not None:
+                                sym_layer.setStrokeStyle(no_pen)
+                            if hasattr(sym_layer, 'setStrokeColor'):
+                                sym_layer.setStrokeColor(QColor(0, 0, 0, 0))
+                        category = QgsRendererCategory(lbl, symbol, lbl)
+                        categories.append(category)
+                    renderer = QgsCategorizedSymbolRenderer(field_class_name, categories)
+                    layer.setRenderer(renderer)
+                    layer.triggerRepaint()
                     
-                    feat.setAttribute(idx_src, tr('InaRISK, by National Disaster Management Authority (BNPB) of Indonesia'))
-                    layer.updateFeature(feat)
-                
-                layer.commitChanges()
                 QgsProject.instance().addMapLayer(layer)
                 
             else:
-                self.log(tr("Saving final raster..."))
+                self.log(tr("Saving raster output..."))
                 self.set_progress(progress_base + 78 * progress_scale / 80)
                 import shutil
                 shutil.copy(current_layer_path, final_out_path)
                 layer = QgsRasterLayer(final_out_path, layer_name)
+                
+                if do_classify and do_symbolize:
+                    from qgis.core import QgsPalettedRasterRenderer, QgsColorRampShader
+                    from qgis.PyQt.QtGui import QColor
+                    classes = [
+                        QgsPalettedRasterRenderer.Class(1, QColor("green"), f"{prefix} {tr('Low')}"),
+                        QgsPalettedRasterRenderer.Class(2, QColor("yellow"), f"{prefix} {tr('Medium')}"),
+                        QgsPalettedRasterRenderer.Class(3, QColor("red"), f"{prefix} {tr('High')}"),
+                    ]
+                    renderer = QgsPalettedRasterRenderer(layer.dataProvider(), 1, classes)
+                    layer.setRenderer(renderer)
+                    layer.triggerRepaint()
+                    
                 QgsProject.instance().addMapLayer(layer)
             
             return "SUCCESS"
